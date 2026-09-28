@@ -1,0 +1,50 @@
+# Keeps the SurauKu server on Render's free plan from falling asleep.
+#
+# Render stops a free service after 15 minutes without a request, and the next
+# visitor then waits up to a minute: the download link and the website look
+# broken. A request every 5 minutes keeps it awake. (GitHub may run scheduled
+# jobs a few minutes late, hence 5 rather than 14.) One free service running
+# all month fits inside Render's 750 free hours.
+name: Keep SurauKu server awake
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'   # ping
+    - cron: '17 3 1 * *'    # monthly: keep this schedule itself alive
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping the server
+        run: |
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 90 https://surauku-api.onrender.com/api/health || true)
+            if [ "$code" = "200" ]; then echo "Server awake (HTTP $code)"; exit 0; fi
+            echo "Attempt $i: HTTP $code"; sleep 15
+          done
+          echo "Server did not answer"; exit 1
+
+  keep-schedule-alive:
+    # GitHub switches off scheduled workflows in a repository with no commit
+    # for 60 days. An empty commit after 40 quiet days prevents that.
+    if: github.event.schedule == '17 3 1 * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Commit if the repository has been quiet
+        run: |
+          quiet_days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "Last commit: $quiet_days days ago"
+          if [ "$quiet_days" -ge 40 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "Keep the server-ping schedule active"
+            git push
+          fi
